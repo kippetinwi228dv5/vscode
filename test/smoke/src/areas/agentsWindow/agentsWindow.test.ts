@@ -201,6 +201,7 @@ export function setup(logger: Logger) {
 					'chat.allowAnonymousAccess': true,
 					'github.copilot.chat.githubMcpServer.enabled': false,
 					'chat.agentHost.enabled': true,
+					'chat.agentHost.ahpJsonlLoggingEnabled': true,
 					'chat.agentHost.unsafeTestToken': 'smoketest-fake-agent-host-token',
 				}, null, 2);
 				for (const settingsPath of [
