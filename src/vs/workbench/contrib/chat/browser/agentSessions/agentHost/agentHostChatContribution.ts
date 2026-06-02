@@ -64,7 +64,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		@ILanguageModelsService private readonly _languageModelsService: ILanguageModelsService,
 		@IInstantiationService private readonly _instantiationService: IInstantiationService,
 		@IAgentHostFileSystemService _agentHostFileSystemService: IAgentHostFileSystemService,
-		@IConfigurationService configurationService: IConfigurationService,
+		@IConfigurationService private readonly _configurationService: IConfigurationService,
 		@ICustomizationHarnessService private readonly _customizationHarnessService: ICustomizationHarnessService,
 		@IWorkbenchEnvironmentService environmentService: IWorkbenchEnvironmentService,
 		@IAgentHostActiveClientService private readonly _activeClientService: IAgentHostActiveClientService,
@@ -73,7 +73,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 
 		this._isSessionsWindow = environmentService.isSessionsWindow;
 
-		if (!configurationService.getValue<boolean>(AgentHostEnabledSettingId)) {
+		if (!this._configurationService.getValue<boolean>(AgentHostEnabledSettingId)) {
 			return;
 		}
 
@@ -235,6 +235,11 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	private async _authenticateWithServer(agents: readonly AgentInfo[]): Promise<void> {
 		this._agentHostService.setAuthenticationPending(true);
 		try {
+			const testToken = getScenarioAutomationToken(this._configurationService);
+			if (testToken !== undefined) {
+				await this._seedTestToken(agents, testToken);
+				return;
+			}
 			await authenticateProtectedResources(agents, {
 				authTokenCache: this._authTokenCache,
 				authenticationService: this._authenticationService,
@@ -256,6 +261,14 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	 * to the server. Returns true if authentication succeeded.
 	 */
 	private async _resolveAuthenticationInteractively(protectedResources: ProtectedResourceMetadata[]): Promise<boolean> {
+		const testToken = getScenarioAutomationToken(this._configurationService);
+		if (testToken !== undefined) {
+			for (const resource of protectedResources) {
+				await this._agentHostService.authenticate({ resource: resource.resource, token: testToken });
+				this._authTokenCache.updateAndIsChanged(resource.resource, testToken);
+			}
+			return protectedResources.length > 0;
+		}
 		try {
 			return await resolveAuthenticationInteractively(protectedResources, {
 				authTokenCache: this._authTokenCache,
@@ -269,4 +282,30 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		}
 		return false;
 	}
+
+	private async _seedTestToken(agents: readonly AgentInfo[], token: string): Promise<void> {
+		for (const agent of agents) {
+			for (const resource of agent.protectedResources ?? []) {
+				if (!this._authTokenCache.updateAndIsChanged(resource.resource, token)) {
+					continue;
+				}
+				try {
+					await this._agentHostService.authenticate({ resource: resource.resource, token });
+				} catch (err) {
+					this._authTokenCache.clear(resource.resource);
+					throw err;
+				}
+			}
+		}
+	}
+}
+
+function getScenarioAutomationToken(configurationService: IConfigurationService): string | undefined {
+	// Smoke-test escape hatch: when the test runner writes a token to this
+	// (intentionally unschemad) setting, we skip `IAuthenticationService` —
+	// which would open a browser to github.com when no real session exists —
+	// and seed the agent host with the supplied token directly. The mock LLM
+	// server in smoke tests doesn't validate the token, so any string works.
+	const token = configurationService.getValue('chat.agentHost.unsafeTestToken');
+	return typeof token === 'string' && token.length > 0 ? token : undefined;
 }
