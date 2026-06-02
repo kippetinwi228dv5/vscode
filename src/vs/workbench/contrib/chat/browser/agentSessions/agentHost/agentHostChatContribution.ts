@@ -54,6 +54,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	private readonly _authTokenCache = new AgentHostAuthTokenCache();
 
 	private readonly _isSessionsWindow: boolean;
+	private readonly _enableSmokeTestDriver: boolean;
 
 	constructor(
 		@IAgentHostService private readonly _agentHostService: IAgentHostService,
@@ -72,6 +73,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 		super();
 
 		this._isSessionsWindow = environmentService.isSessionsWindow;
+		this._enableSmokeTestDriver = !!environmentService.enableSmokeTestDriver;
 
 		if (!this._configurationService.getValue<boolean>(AgentHostEnabledSettingId)) {
 			return;
@@ -235,7 +237,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	private async _authenticateWithServer(agents: readonly AgentInfo[]): Promise<void> {
 		this._agentHostService.setAuthenticationPending(true);
 		try {
-			const testToken = getScenarioAutomationToken(this._configurationService);
+			const testToken = this._getScenarioAutomationToken();
 			if (testToken !== undefined) {
 				await this._seedTestToken(agents, testToken);
 				return;
@@ -261,7 +263,7 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 	 * to the server. Returns true if authentication succeeded.
 	 */
 	private async _resolveAuthenticationInteractively(protectedResources: ProtectedResourceMetadata[]): Promise<boolean> {
-		const testToken = getScenarioAutomationToken(this._configurationService);
+		const testToken = this._getScenarioAutomationToken();
 		if (testToken !== undefined) {
 			for (const resource of protectedResources) {
 				await this._agentHostService.authenticate({ resource: resource.resource, token: testToken });
@@ -298,14 +300,18 @@ export class AgentHostContribution extends Disposable implements IWorkbenchContr
 			}
 		}
 	}
-}
 
-function getScenarioAutomationToken(configurationService: IConfigurationService): string | undefined {
-	// Smoke-test escape hatch: when the test runner writes a token to this
-	// (intentionally unschemad) setting, we skip `IAuthenticationService` —
-	// which would open a browser to github.com when no real session exists —
-	// and seed the agent host with the supplied token directly. The mock LLM
-	// server in smoke tests doesn't validate the token, so any string works.
-	const token = configurationService.getValue('chat.agentHost.unsafeTestToken');
-	return typeof token === 'string' && token.length > 0 ? token : undefined;
+	private _getScenarioAutomationToken(): string | undefined {
+		// Smoke-test escape hatch: when the test runner writes a token to this
+		// (intentionally unschemad) setting, we skip `IAuthenticationService` —
+		// which would open a browser to github.com when no real session exists —
+		// and seed the agent host with the supplied token directly. The mock LLM
+		// server in smoke tests doesn't validate the token, so any string works.
+		// Gated on the smoke-test driver flag so the setting is ignored in normal runs.
+		if (!this._enableSmokeTestDriver) {
+			return undefined;
+		}
+		const token = this._configurationService.getValue('chat.agentHost.unsafeTestToken');
+		return typeof token === 'string' && token.length > 0 ? token : undefined;
+	}
 }
