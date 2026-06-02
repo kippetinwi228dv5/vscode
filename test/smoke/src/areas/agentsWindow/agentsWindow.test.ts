@@ -240,8 +240,21 @@ export function setup(logger: Logger) {
 		});
 
 		it('Test Copilot CLI session via AgentHost', async function () {
+			// The AgentHost path is slow in CI: agent host process startup +
+			// Copilot CLI subprocess startup + worktree creation + workspace
+			// scan can easily exceed mocha's default 2-minute timeout.
+			this.timeout(5 * 60 * 1000);
+
 			const app = this.app as Application;
 
+			// AgentHostContribution's `_handleRootStateChange` disposes the
+			// chat session registration whenever the agent host pushes a
+			// root-state snapshot whose `agents` array doesn't include the
+			// current provider. When that fires mid-response the chat widget
+			// resets to a new-session view and the reply vanishes. Race the
+			// response wait against a new-session-view poll so we fail fast
+			// (and let `retry()` re-submit) instead of waiting the full
+			// timeout for a now-gone bubble.
 			const text = await retry(async () => {
 				const requestsBefore = mockServer.requestCount();
 				await app.workbench.agentsWindow.waitForNewSessionView();
@@ -249,16 +262,22 @@ export function setup(logger: Logger) {
 				await app.workbench.agentsWindow.submitNewSessionPrompt(`hello world [scenario:${AGENT_HOST_SCENARIO_ID}]`);
 
 				const reply = await Promise.race([
-					app.workbench.agentsWindow.waitForAssistantText(AGENT_HOST_REPLY),
+					// `requireComplete: false` accepts the text the moment it
+					// renders, without waiting for the bubble's
+					// `chat-response-loading` class to drop. In CI the
+					// Copilot CLI subprocess lingers in post-stream
+					// finalization long after the mock reply has streamed,
+					// or the AgentHost contribution resets the registration
+					// before the response is marked complete \u2014 either way
+					// the text is visible but the bubble never flips to
+					// "complete".
+					app.workbench.agentsWindow.waitForAssistantText(AGENT_HOST_REPLY, 180_000, { requireComplete: false }),
 					(async () => {
-						// Poll for the new-session view returning. `submitNewSessionPrompt`
-						// already confirmed it disappeared, so any later sighting means the
-						// chat reset out from under us.
 						while (true) {
 							await new Promise(r => setTimeout(r, 500));
 							const newSession = await app.code.getElements('.sessions-chat-widget .new-chat-widget-container', /* recursive */ false);
 							if (newSession && newSession.length > 0) {
-								throw new Error('chat reset to new-session view before the reply arrived — likely an AgentHostContribution registration race (see _handleRootStateChange disposing the chat session contribution on a transient empty agents push)');
+								throw new Error('chat reset to new-session view before the reply arrived \u2014 likely an AgentHostContribution registration race (see _handleRootStateChange disposing the chat session contribution on a transient empty agents push)');
 							}
 						}
 					})(),

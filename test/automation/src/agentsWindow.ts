@@ -165,13 +165,27 @@ export class AgentsWindow {
 	 * Wait until at least one assistant response bubble contains text
 	 * matching the predicate. Returns the matched element's full text
 	 * content.
+	 *
+	 * Pass `requireComplete: false` to accept the text as soon as it
+	 * renders, even while the response is still streaming
+	 * (`.chat-response-loading` set). Required for the AgentHost path,
+	 * where the Copilot CLI subprocess lingers in post-stream
+	 * finalization for many seconds (or never — the AgentHost
+	 * contribution can dispose the registration mid-response on a
+	 * transient `agents: []` push, leaving the response stuck as
+	 * "not complete" from the renderer's perspective even though the
+	 * text is visible).
 	 */
-	async waitForAssistantText(predicate: RegExp | string, timeoutMs: number = 60_000): Promise<string> {
+	async waitForAssistantText(predicate: RegExp | string, timeoutMs: number = 60_000, options: { requireComplete?: boolean } = {}): Promise<string> {
+		const requireComplete = options.requireComplete ?? true;
 		const retryCount = Math.ceil(timeoutMs / 100);
 		await this.code.waitForElement(RESPONSE, undefined, retryCount);
-		await this.code.waitForElement(RESPONSE_COMPLETE, undefined, retryCount);
+		if (requireComplete) {
+			await this.code.waitForElement(RESPONSE_COMPLETE, undefined, retryCount);
+		}
 
-		const responseSelector = `${RESPONSE_COMPLETE} .rendered-markdown`;
+		const bubbleSelector = requireComplete ? RESPONSE_COMPLETE : RESPONSE;
+		const responseSelector = `${bubbleSelector} .rendered-markdown`;
 		const deadline = Date.now() + timeoutMs;
 		while (Date.now() < deadline) {
 			const elements = await this.code.getElements(responseSelector, /* recursive */ true);
